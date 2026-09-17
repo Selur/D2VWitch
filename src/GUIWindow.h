@@ -35,7 +35,7 @@ SOFTWARE.
 
 #include <QSettings>
 
-#include <VapourSynth.h>
+#include <VapourSynth4.h>
 
 #include "Audio.h"
 #include "D2V.h"
@@ -76,8 +76,7 @@ class GUIWindow : public QMainWindow {
 
     const VSAPI *vsapi;
     VSCore *vscore;
-    VSNodeRef *vsnode;
-    const VSFrameRef *vsframe;
+    VSNode *vsnode;
 
     int range_start;
     int range_end;

@@ -146,7 +146,12 @@ bool D2V::printSettings() {
     AVRational dar = av_mul_q(av_make_q(width, height), sar);
     av_reduce(&dar.num, &dar.den, dar.num, dar.den, 1024);
 
-    AVRational frame_rate = video_stream->avg_frame_rate;
+    // The frame rate from the sequence header, like DGIndex. avg_frame_rate is derived from the
+    // timestamps (e.g. 179/6 instead of 30000/1001), and for elementary streams lavf fills it
+    // with the raw demuxer's default of 25 fps since FFmpeg 7.
+    AVRational frame_rate = video_stream->codecpar->framerate;
+    if (frame_rate.num <= 0 || frame_rate.den <= 0)
+        frame_rate = video_stream->avg_frame_rate;
     if (frame_rate.num <= 0 || frame_rate.den <= 0) {
         if (guessed_frame_rate.num > 0 && guessed_frame_rate.den > 0) {
             frame_rate = guessed_frame_rate;
@@ -418,7 +423,14 @@ bool D2V::handleAudioPacket(AVPacket *packet) {
 
         AVCodecContext *codec = f->audio_ctx.at(packet->stream_index);
 
-        AVFrame *frame = av_frame_alloc();
+        AVFramePtr frame_ptr(av_frame_alloc());
+        AVPacketPtr pkt_out_ptr(av_packet_alloc());
+        if (!frame_ptr || !pkt_out_ptr) {
+            error = "Failed to allocate AVFrame or AVPacket for audio decoding.";
+
+            return false;
+        }
+        AVFrame *frame = frame_ptr.get();
 
         int ret = avcodec_send_packet(codec, packet);
         if (ret < 0) {
@@ -447,15 +459,16 @@ bool D2V::handleAudioPacket(AVPacket *packet) {
                 break;
             }
 
-            AVPacket pkt_out;
-            av_init_packet(&pkt_out);
-            pkt_out.data = frame->data[0];
-            pkt_out.size = frame->nb_samples * frame->channels * av_get_bytes_per_sample((AVSampleFormat)frame->format);
-            pkt_out.stream_index = 0;
-            pkt_out.pts = 0;
-            pkt_out.dts = 0;
+            AVPacket *pkt_out = pkt_out_ptr.get();
+            pkt_out->data = frame->data[0];
+            pkt_out->size = frame->nb_samples * frame->ch_layout.nb_channels * av_get_bytes_per_sample((AVSampleFormat)frame->format);
+            pkt_out->stream_index = 0;
+            pkt_out->pts = 0;
+            pkt_out->dts = 0;
 
-            av_write_frame(w64_ctx, &pkt_out);
+            av_write_frame(w64_ctx, pkt_out);
+
+            av_frame_unref(frame);
         };
 
         av_frame_unref(frame);
@@ -529,9 +542,22 @@ const std::string &D2V::getError() const {
 std::atomic_bool stop_processing(false);
 
 
+// Stream ids are not unique across stream types, e.g. in PVA files.
+static bool isVideoStream(const AVStream *stream, int video_id) {
+    return stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO && stream->id == video_id;
+}
+
+
 void D2V::index() {
-    AVPacket packet;
-    av_init_packet(&packet);
+    AVPacketPtr packet_ptr(av_packet_alloc());
+    if (!packet_ptr) {
+        result = ProcessingError;
+        error = "Failed to allocate AVPacket.";
+        fclose(d2v_file);
+        closeAudioFiles(audio_files, f->fctx);
+        return;
+    }
+    AVPacket &packet = *packet_ptr;
 
     while (av_read_frame(f->fctx, &packet) == 0) {
         if (stop_processing) {
@@ -622,8 +648,6 @@ void D2V::index() {
         return;
     }
 
-    av_init_packet(&packet);
-
     for (size_t i = 0; i < lines.size(); ) {
         // Report progress because this takes a while. Especially with slow hard drives, probably.
         if (progress_report)
@@ -648,7 +672,7 @@ void D2V::index() {
         do {
             av_packet_unref(&packet);
             av_read_frame(f2.fctx, &packet);
-        } while (f2.fctx->streams[packet.stream_index]->id != video_stream->id);
+        } while (!isVideoStream(f2.fctx->streams[packet.stream_index], video_stream->id));
 
         int64_t position = packet.pos;
 
@@ -674,7 +698,7 @@ void D2V::index() {
                 do {
                     av_packet_unref(&packet);
                     av_read_frame(f2.fctx, &packet);
-                } while (f2.fctx->streams[packet.stream_index]->id != video_stream->id);
+                } while (!isVideoStream(f2.fctx->streams[packet.stream_index], video_stream->id));
 
                 position = packet.pos;
 
@@ -801,8 +825,14 @@ void D2V::demuxVideo(FILE *video_file, int64_t start_gop_position, int64_t end_g
 
     f->seek(start_gop_position);
 
-    AVPacket packet;
-    av_init_packet(&packet);
+    AVPacketPtr packet_ptr(av_packet_alloc());
+    if (!packet_ptr) {
+        result = ProcessingError;
+        error = "Failed to allocate AVPacket.";
+        fclose(video_file);
+        return;
+    }
+    AVPacket &packet = *packet_ptr;
 
     while (av_read_frame(f->fctx, &packet) == 0) {
         if (stop_processing) {
@@ -993,14 +1023,18 @@ std::string suggestAudioTrackSuffix(const AVStream *stream, const AudioDelayMap 
 
     suggestion += id;
 
+    AVChannelLayout channel_layout = { };
+    getChannelLayout(stream->codecpar, &channel_layout);
+
     char channels[512] = { 0 };
-    av_get_channel_layout_string(channels, 512, 0, getChannelLayout(stream->codecpar));
+    av_channel_layout_describe(&channel_layout, channels, sizeof(channels));
+    av_channel_layout_uninit(&channel_layout);
     suggestion += " ";
     suggestion += channels;
 
-    int64_t bit_rate = 0;
+    int64_t bit_rate = stream->codecpar->bit_rate;
 
-    if (stream->codecpar->bit_rate < 0)
+    if (bit_rate < 0)
         bit_rate = 0;
 
     suggestion += " " + std::to_string(bit_rate / 1000) + " kbps";

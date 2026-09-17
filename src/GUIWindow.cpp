@@ -26,7 +26,9 @@ extern "C" {
 #include <libavutil/pixdesc.h>
 }
 
+#include <QCoreApplication>
 #include <QDateTime>
+#include <QDir>
 #include <QFileInfo>
 #include <QLibrary>
 #include <QMimeData>
@@ -36,7 +38,6 @@ extern "C" {
 #include <QGroupBox>
 #include <QMenuBar>
 #include <QMessageBox>
-#include <QStatusBar>
 #include <QHBoxLayout>
 #include <QVBoxLayout>
 
@@ -437,7 +438,6 @@ GUIWindow::GUIWindow(QSettings &_settings, QWidget *parent)
     , vsapi(nullptr)
     , vscore(nullptr)
     , vsnode(nullptr)
-    , vsframe(nullptr)
     , settings(_settings)
 {
     qRegisterMetaType<int64_t>("int64_t");
@@ -529,9 +529,6 @@ GUIWindow::GUIWindow(QSettings &_settings, QWidget *parent)
     QAction *about_action = new QAction(QStringLiteral("&About D2V Witch"), this);
 
     QAction *aboutqt_action = new QAction(QStringLiteral("About &Qt"), this);
-
-
-    statusBar()->addWidget(new QLabel(QStringLiteral("Help the author with a coffee, maybe: <a href=\"https://ko-fi.com/bitterblue\">https://ko-fi.com/bitterblue</a>")));
 
 
     connect(input_list, &ListWidget::deletePressed, remove_button, &QPushButton::click);
@@ -656,11 +653,7 @@ GUIWindow::GUIWindow(QSettings &_settings, QWidget *parent)
         d2v_edit->setText(file_name);
     });
 
-#ifdef USE_QT6
-    connect(video_group, static_cast<void (QButtonGroup::*)(int, bool)>(&QButtonGroup::idToggled), [this] (int id, bool checked) {
-#else
-    connect(video_group, static_cast<void (QButtonGroup::*)(int, bool)>(&QButtonGroup::buttonToggled), [this] (int id, bool checked) {
-#endif
+    connect(video_group, &QButtonGroup::idToggled, [this] (int id, bool checked) {
         // "int id" is the QButtonGroup id, not AVStream::id
 
         if (checked) {
@@ -712,7 +705,7 @@ GUIWindow::GUIWindow(QSettings &_settings, QWidget *parent)
         updateRangeLabel();
     });
 
-    connect(video_frame_spin, static_cast<void (QSpinBox::*)(int)>(&QSpinBox::valueChanged), this, &GUIWindow::displayFrame);
+    connect(video_frame_spin, qOverload<int>(&QSpinBox::valueChanged), this, &GUIWindow::displayFrame);
 
     connect(video_frame_slider, &QSlider::valueChanged, this, &GUIWindow::displayFrame);
 
@@ -1057,23 +1050,40 @@ void GUIWindow::displayFrame(int n) {
 
     std::vector<char> error(1024);
 
-    const VSFrameRef *frame = vsapi->getFrame(n, vsnode, error.data(), error.size());
+    const VSFrame *frame = vsapi->getFrame(n, vsnode, error.data(), error.size());
 
     if (!frame) {
         logMessage(QStringLiteral("Failed to retrieve frame number %1. Error message: %2").arg(n).arg(error.data()));
         return;
     }
 
-    const uint8_t *ptr = vsapi->getReadPtr(frame, 0);
+    // The frame is planar RGB24, QImage wants packed pixels.
     int width = vsapi->getFrameWidth(frame, 0);
     int height = vsapi->getFrameHeight(frame, 0);
-    int stride = vsapi->getStride(frame, 0);
-    QPixmap pixmap = QPixmap::fromImage(QImage(ptr, width, height, stride, QImage::Format_RGB32).mirrored(false, true));
 
-    video_frame_label->setPixmap(pixmap);
-    // Must free the frame only after replacing the pixmap.
-    vsapi->freeFrame(vsframe);
-    vsframe = frame;
+    const uint8_t *src_r = vsapi->getReadPtr(frame, 0);
+    const uint8_t *src_g = vsapi->getReadPtr(frame, 1);
+    const uint8_t *src_b = vsapi->getReadPtr(frame, 2);
+    ptrdiff_t stride_r = vsapi->getStride(frame, 0);
+    ptrdiff_t stride_g = vsapi->getStride(frame, 1);
+    ptrdiff_t stride_b = vsapi->getStride(frame, 2);
+
+    QImage image(width, height, QImage::Format_RGB32);
+
+    for (int y = 0; y < height; y++) {
+        QRgb *dst = reinterpret_cast<QRgb *>(image.scanLine(y));
+
+        for (int x = 0; x < width; x++)
+            dst[x] = qRgb(src_r[x], src_g[x], src_b[x]);
+
+        src_r += stride_r;
+        src_g += stride_g;
+        src_b += stride_b;
+    }
+
+    vsapi->freeFrame(frame);
+
+    video_frame_label->setPixmap(QPixmap::fromImage(image));
 }
 
 
@@ -1082,14 +1092,29 @@ void GUIWindow::updateRangeLabel() {
 }
 
 
-void GUIWindow::initialiseVapourSynth() {
+#define D2VSOURCE_ID    "com.sources.d2vsource"
+#define RESIZE_ID       "com.vapoursynth.resize"
+#define STD_ID          "com.vapoursynth.std"
+
 #define THEREFORE ", therefore video preview is not available."
 
+
+void GUIWindow::initialiseVapourSynth() {
     QLibrary libvs;
 
+    QString env_path = qEnvironmentVariable("D2VWITCH_VAPOURSYNTH_LIB");
+    if (!env_path.isEmpty()) {
+        libvs.setFileName(env_path);
+        if (!libvs.load())
+            logMessage(QStringLiteral("Could not load %1 from D2VWITCH_VAPOURSYNTH_LIB: %2").arg(env_path).arg(libvs.errorString()));
+    }
+
 #ifdef _WIN32
-    libvs.setFileName(QStringLiteral("vapoursynth"));
-    if (!libvs.load()) {
+    if (!libvs.isLoaded()) {
+        libvs.setFileName(QStringLiteral("vapoursynth"));
+        libvs.load();
+    }
+    if (!libvs.isLoaded()) {
         HKEY hKey;
         LONG lRes = RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"Software\\VapourSynth", 0, KEY_READ, &hKey);
         if (lRes == ERROR_SUCCESS) {
@@ -1107,7 +1132,24 @@ void GUIWindow::initialiseVapourSynth() {
         }
     }
 #else
-    libvs.setFileName(QStringLiteral("libvapoursynth"));
+#ifdef Q_OS_MACOS
+    // d2vwitch.app ships its own VapourSynth core in Contents/Frameworks/vapoursynth,
+    // next to libvapoursynthfilters.dylib and plugins/d2vsource.dylib.
+    if (!libvs.isLoaded()) {
+        QString path = QDir::cleanPath(QCoreApplication::applicationDirPath() + QStringLiteral("/../Frameworks/vapoursynth/libvapoursynth.4.dylib"));
+        if (QFileInfo::exists(path)) {
+            libvs.setFileName(path);
+            if (!libvs.load())
+                logMessage(QStringLiteral("Could not load %1: %2").arg(path).arg(libvs.errorString()));
+        }
+    }
+#endif
+
+    if (!libvs.isLoaded()) {
+        libvs.setFileNameAndVersion(QStringLiteral("vapoursynth"), 4);
+        if (!libvs.load())
+            libvs.setFileName(QStringLiteral("vapoursynth"));
+    }
 #endif
 
     if (!libvs.isLoaded() && !libvs.load()) {
@@ -1136,9 +1178,9 @@ void GUIWindow::initialiseVapourSynth() {
         return;
     }
 
-    vsapi = getVapourSynthAPIAddr((3 << 16) | 0); // API 3.0 is enough at the moment.
+    vsapi = getVapourSynthAPIAddr(VAPOURSYNTH_API_VERSION);
     if (!vsapi) {
-        logMessage(QStringLiteral("Could not obtain the VSAPI pointer" THEREFORE));
+        logMessage(QStringLiteral("Could not obtain the VSAPI pointer from %1, VapourSynth R55 or newer is required" THEREFORE).arg(libvs.fileName()));
 
         return;
     }
@@ -1151,15 +1193,11 @@ void GUIWindow::initialiseVapourSynth() {
         return;
     }
 
-#define D2VSOURCE_ID    "com.sources.d2vsource"
-#define RESIZE_ID       "com.vapoursynth.resize"
-#define STD_ID          "com.vapoursynth.std"
-
 #if defined(_WIN32)
     // If d2vsource was not autoloaded, try to load it from alternative locations (PATH and the location of d2vwitch.exe).
     // Requested by stax76.
-    if (!vsapi->getPluginById(D2VSOURCE_ID, vscore)) {
-        VSPlugin *std_plugin = vsapi->getPluginById(STD_ID, vscore);
+    if (!vsapi->getPluginByID(D2VSOURCE_ID, vscore)) {
+        VSPlugin *std_plugin = vsapi->getPluginByID(STD_ID, vscore);
         if (!std_plugin) {
             logMessage(QStringLiteral("VapourSynth plugin %1 is not loaded" THEREFORE).arg(STD_ID));
 
@@ -1170,14 +1208,14 @@ void GUIWindow::initialiseVapourSynth() {
         }
 
         VSMap *args = vsapi->createMap();
-        vsapi->propSetData(args, "path", "d2vsource.dll", -1, paReplace);
-        vsapi->propSetInt(args, "altsearchpath", 1, paReplace);
+        vsapi->mapSetData(args, "path", "d2vsource.dll", -1, dtUtf8, maReplace);
+        vsapi->mapSetInt(args, "altsearchpath", 1, maReplace);
 
         VSMap *ret = vsapi->invoke(std_plugin, "LoadPlugin", args);
         vsapi->freeMap(args);
 
-        if (vsapi->getError(ret))
-            logMessage(QStringLiteral("Tried to load d2vsource.dll from PATH and the location of this executable, but it didn't work. Error message: %1").arg(vsapi->getError(ret)));
+        if (vsapi->mapGetError(ret))
+            logMessage(QStringLiteral("Tried to load d2vsource.dll from PATH and the location of this executable, but it didn't work. Error message: %1").arg(vsapi->mapGetError(ret)));
 
         vsapi->freeMap(ret);
     }
@@ -1186,12 +1224,11 @@ void GUIWindow::initialiseVapourSynth() {
     const char *required_plugins[] = {
         D2VSOURCE_ID,
         RESIZE_ID,
-        STD_ID,
         nullptr
     };
     for (int i = 0; required_plugins[i]; i++) {
-        if (!vsapi->getPluginById(required_plugins[i], vscore)) {
-            logMessage(QStringLiteral("VapourSynth plugin %1 is not loaded" THEREFORE).arg(required_plugins[i]));
+        if (!vsapi->getPluginByID(required_plugins[i], vscore)) {
+            logMessage(QStringLiteral("VapourSynth plugin %1 is not loaded (VapourSynth library: %2)" THEREFORE).arg(required_plugins[i]).arg(libvs.fileName()));
 
             vsapi->freeCore(vscore);
             vscore = nullptr;
@@ -1207,8 +1244,6 @@ void GUIWindow::freeVapourSynth() {
         return;
 
     video_frame_label->setPixmap(QPixmap());
-    vsapi->freeFrame(vsframe);
-    vsframe = nullptr;
 
     vsapi->freeNode(vsnode);
     vsnode = nullptr;
@@ -1224,73 +1259,56 @@ void GUIWindow::createVapourSynthFilterChain() {
     if (!vsapi)
         return;
 
-    VSPlugin *d2vsource_plugin = vsapi->getPluginById(D2VSOURCE_ID, vscore);
-    VSPlugin *resize_plugin = vsapi->getPluginById(RESIZE_ID, vscore);
-    VSPlugin *std_plugin = vsapi->getPluginById(STD_ID, vscore);
+    vsapi->freeNode(vsnode);
+    vsnode = nullptr;
 
-#undef D2VSOURCE_ID
-#undef RESIZE_ID
-#undef STD_ID
+    VSPlugin *d2vsource_plugin = vsapi->getPluginByID(D2VSOURCE_ID, vscore);
+    VSPlugin *resize_plugin = vsapi->getPluginByID(RESIZE_ID, vscore);
 
     VSMap *args = vsapi->createMap();
 
     const std::string &d2v_name = d2v_edit->text().toStdString();
-    vsapi->propSetData(args, "input", d2v_name.c_str(), d2v_name.size(), paReplace);
-    vsapi->propSetInt(args, "rff", 0, paReplace);
+    vsapi->mapSetData(args, "input", d2v_name.c_str(), d2v_name.size(), dtUtf8, maReplace);
+    vsapi->mapSetInt(args, "rff", 0, maReplace);
 
     VSMap *ret = vsapi->invoke(d2vsource_plugin, "Source", args);
-    if (vsapi->getError(ret)) {
-        logMessage(QStringLiteral("Failed to invoke d2v.Source" THEREFORE " Error message: %1").arg(vsapi->getError(ret)));
+    if (vsapi->mapGetError(ret)) {
+        logMessage(QStringLiteral("Failed to invoke d2v.Source" THEREFORE " Error message: %1").arg(vsapi->mapGetError(ret)));
 
         vsapi->freeMap(ret);
         vsapi->freeMap(args);
 
         return;
     }
-    vsnode = vsapi->propGetNode(ret, "clip", 0, nullptr);
+    VSNode *source_node = vsapi->mapGetNode(ret, "clip", 0, nullptr);
     vsapi->freeMap(ret);
     vsapi->clearMap(args);
 
-    vsapi->propSetNode(args, "clip", vsnode, paReplace);
-    vsapi->freeNode(vsnode);
-    vsapi->propSetInt(args, "format", pfCompatBGR32, paReplace);
-    vsapi->propSetData(args, "matrix_in_s", "709", -1, paReplace);
-    vsapi->propSetInt(args, "prefer_props", 1, paReplace);
+    vsapi->mapConsumeNode(args, "clip", source_node, maReplace);
+    vsapi->mapSetInt(args, "format", pfRGB24, maReplace);
+    vsapi->mapSetData(args, "matrix_in_s", "709", -1, dtUtf8, maReplace);
 
     ret = vsapi->invoke(resize_plugin, "Bicubic", args);
-    if (vsapi->getError(ret)) {
-        logMessage(QStringLiteral("Failed to invoke resize.Bicubic" THEREFORE " Error message: %1").arg(vsapi->getError(ret)));
-
-        vsapi->freeMap(ret);
-        vsapi->freeMap(args);
-
-        return;
-    }
-    vsnode = vsapi->propGetNode(ret, "clip", 0, nullptr);
-    vsapi->freeMap(ret);
-    vsapi->clearMap(args);
-
-    vsapi->propSetNode(args, "clip", vsnode, paReplace);
-    vsapi->freeNode(vsnode);
-
-    ret = vsapi->invoke(std_plugin, "Cache", args);
-    if (vsapi->getError(ret)) {
-        logMessage(QStringLiteral("Failed to invoke std.Cache" THEREFORE " Error message: %1").arg(vsapi->getError(ret)));
-
-        vsapi->freeMap(ret);
-        vsapi->freeMap(args);
-
-        return;
-    }
-    vsnode = vsapi->propGetNode(ret, "clip", 0, nullptr);
-    vsapi->freeMap(ret);
     vsapi->freeMap(args);
+    if (vsapi->mapGetError(ret)) {
+        logMessage(QStringLiteral("Failed to invoke resize.Bicubic" THEREFORE " Error message: %1").arg(vsapi->mapGetError(ret)));
+
+        vsapi->freeMap(ret);
+
+        return;
+    }
+    vsnode = vsapi->mapGetNode(ret, "clip", 0, nullptr);
+    vsapi->freeMap(ret);
 
 
     displayFrame(0);
+}
 
 #undef THEREFORE
-}
+
+#undef D2VSOURCE_ID
+#undef RESIZE_ID
+#undef STD_ID
 
 
 void GUIWindow::dragEnterEvent(QDragEnterEvent *event) {

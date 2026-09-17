@@ -47,6 +47,7 @@ AVFormatContext *openWave64(const std::string &path, const AVCodecParameters *in
         av_strerror(ret, temp, ERROR_SIZE);
         error = "Failed to open AVIOContext for audio file '" + path + "': " + temp;
 
+        avio_closep(&w64_ctx->pb);
         avformat_free_context(w64_ctx);
 
         return nullptr;
@@ -58,6 +59,7 @@ AVFormatContext *openWave64(const std::string &path, const AVCodecParameters *in
     if (!pcm_codec) {
         error = "Failed to find encoder for codec '" + std::string(avcodec_get_name(codec_id)) + "' (id " + std::to_string(codec_id) + ").";
 
+        avio_closep(&w64_ctx->pb);
         avformat_free_context(w64_ctx);
 
         return nullptr;
@@ -66,6 +68,7 @@ AVFormatContext *openWave64(const std::string &path, const AVCodecParameters *in
     if (!avformat_new_stream(w64_ctx, pcm_codec)) {
         error = "Failed to create new AVStream for audio file '" + path + "'.";
 
+        avio_closep(&w64_ctx->pb);
         avformat_free_context(w64_ctx);
 
         return nullptr;
@@ -75,6 +78,7 @@ AVFormatContext *openWave64(const std::string &path, const AVCodecParameters *in
     if (!out_ctx) {
         error = "Failed to create new AVCodecContext for audio file '" + path + "'.";
 
+        avio_closep(&w64_ctx->pb);
         avformat_free_context(w64_ctx);
 
         return nullptr;
@@ -84,25 +88,35 @@ AVFormatContext *openWave64(const std::string &path, const AVCodecParameters *in
     out_ctx->codec_id = codec_id;
     out_ctx->codec_tag = 0x0001;
     out_ctx->sample_rate = in_par->sample_rate;
-    out_ctx->channels = in_par->channels;
     out_ctx->sample_fmt = static_cast<AVSampleFormat>(in_par->format);
-    out_ctx->channel_layout = in_par->channel_layout;
-
-    ret = avcodec_open2(out_ctx, pcm_codec, nullptr);
+    ret = av_channel_layout_copy(&out_ctx->ch_layout, &in_par->ch_layout);
     if (ret < 0) {
-        error = "Failed to open codec for audio file '" + path + "'";
+        error = "Failed to copy channel layout for audio file '" + path + "'";
 
+        avio_closep(&w64_ctx->pb);
         avformat_free_context(w64_ctx);
         avcodec_free_context(&out_ctx);
 
         return nullptr;
     }
-    avcodec_parameters_from_context(w64_ctx->streams[0]->codecpar, out_ctx);
+
+    ret = avcodec_open2(out_ctx, pcm_codec, nullptr);
+    if (ret < 0) {
+        error = "Failed to open codec for audio file '" + path + "'";
+
+        avio_closep(&w64_ctx->pb);
+        avformat_free_context(w64_ctx);
+        avcodec_free_context(&out_ctx);
+
+        return nullptr;
+    }
+    ret = avcodec_parameters_from_context(w64_ctx->streams[0]->codecpar, out_ctx);
+    avcodec_free_context(&out_ctx);
     if (ret < 0) {
         error = "Failed to copy codec parameters for audio file '" + path + "'";
 
+        avio_closep(&w64_ctx->pb);
         avformat_free_context(w64_ctx);
-        avcodec_free_context(&out_ctx);
 
         return nullptr;
     }
@@ -113,6 +127,7 @@ AVFormatContext *openWave64(const std::string &path, const AVCodecParameters *in
 #undef ERROR_SIZE
         error = "Failed to write Wave64 header to file '" + path + "': " + temp;
 
+        avio_closep(&w64_ctx->pb);
         avformat_free_context(w64_ctx);
 
         return nullptr;
@@ -131,6 +146,7 @@ void closeAudioFiles(AudioFilesMap &audio_files, const AVFormatContext *fctx) {
                 AVFormatContext *w64_ctx = (AVFormatContext *)pointer;
 
                 av_write_trailer(w64_ctx);
+                avio_closep(&w64_ctx->pb);
                 avformat_free_context(w64_ctx);
             } else {
                 fclose((FILE *)pointer);
@@ -151,15 +167,11 @@ const char *suggestAudioFileExtension(AVCodecID codec_id) {
 }
 
 
-int64_t getChannelLayout(AVCodecParameters *avpar) {
-    int64_t channel_layout = avpar->channel_layout;
-
-    if (channel_layout == 0) {
-        int64_t channels = avpar->channels;
-        channel_layout = av_get_default_channel_layout(channels);
-    }
-
-    return channel_layout;
+void getChannelLayout(const AVCodecParameters *avpar, AVChannelLayout *channel_layout) {
+    if (avpar->ch_layout.order == AV_CHANNEL_ORDER_UNSPEC)
+        av_channel_layout_default(channel_layout, avpar->ch_layout.nb_channels);
+    else
+        av_channel_layout_copy(channel_layout, &avpar->ch_layout);
 }
 
 
@@ -184,7 +196,8 @@ bool calculateAudioDelays(FakeFile &fake_file, int video_stream_id, AudioDelayMa
     int video_stream_index = 0;
 
     for (unsigned i = 0; i < f.fctx->nb_streams; i++) {
-        if (f.fctx->streams[i]->id == video_stream_id) {
+        // Stream ids are not unique across stream types, e.g. in PVA files.
+        if (f.fctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO && f.fctx->streams[i]->id == video_stream_id) {
             video_stream_index = i;
         } else if (f.fctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
             audio_delay_map[f.fctx->streams[i]->id] = AV_NOPTS_VALUE;
@@ -216,8 +229,16 @@ bool calculateAudioDelays(FakeFile &fake_file, int video_stream_id, AudioDelayMa
 
     bool second_keyframe_reached = false;
 
-    AVPacket packet;
-    av_init_packet(&packet);
+    AVPacketPtr packet_ptr(av_packet_alloc());
+    if (!packet_ptr) {
+        error = error_prefix + std::string("failed to allocate AVPacket.");
+
+        f.cleanup();
+        FakeFile::seek(&fake_file, original_position, SEEK_SET);
+
+        return false;
+    }
+    AVPacket &packet = *packet_ptr;
 
     struct AudioPacketDetails {
          int64_t pos;

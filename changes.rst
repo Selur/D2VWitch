@@ -1,3 +1,43 @@
+v6 (20260917)
+=============
+
+* Require Qt 6, FFmpeg 7.0 or newer and VapourSynth R55 or newer (API 4).
+  Qt 5, older FFmpeg versions and VapourSynth API 3 are no longer
+  supported.
+
+* Remove the autotools build system. Meson is the only build system now.
+  If VapourSynth's pkg-config file is not available, the location of
+  VapourSynth4.h can be passed with ``-Dvapoursynth_includedir``.
+
+* The command line interface no longer creates a QApplication, so it
+  works without a display or a Qt platform plugin. The graphical
+  interface is still shown if there are no command line parameters or
+  if they are all recognised by Qt.
+
+* Fix the frame rate in d2v files: use the frame rate from the sequence
+  header. With FFmpeg 7 and newer, MPEG elementary streams always got
+  25 fps. With other containers the frame rate was derived from the
+  timestamps and could be something like 179/6 instead of 30000/1001.
+
+* Fix crash when demuxing audio from PVA files, where the video and the
+  audio stream have the same id. The check of the keyframe positions
+  could also mistake an audio packet for a video packet in such files.
+
+* Put the real bit rate into the names of demuxed audio files again. It
+  was always 0 since the FFmpeg 6 update.
+
+* Fix memory leaks: the input buffer was not freed when closing a file,
+  and Wave64 audio files were not closed properly.
+
+* The preview uses VapourSynth API 4. On macOS it first looks for the
+  VapourSynth library in ``d2vwitch.app/Contents/Frameworks/vapoursynth``.
+  The environment variable ``D2VWITCH_VAPOURSYNTH_LIB`` can point to a
+  different VapourSynth library.
+
+* Remove the donation link from the status bar.
+
+
+
 v5 (20201112)
 =============
 

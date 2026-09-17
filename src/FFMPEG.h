@@ -22,6 +22,7 @@ SOFTWARE.
 #define D2V_WITCH_FFMPEG_H
 
 
+#include <memory>
 #include <string>
 #include <unordered_map>
 
@@ -29,6 +30,24 @@ extern "C" {
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
 }
+
+
+struct AVPacketDeleter {
+    void operator()(AVPacket *packet) const {
+        av_packet_free(&packet);
+    }
+};
+
+typedef std::unique_ptr<AVPacket, AVPacketDeleter> AVPacketPtr;
+
+
+struct AVFrameDeleter {
+    void operator()(AVFrame *frame) const {
+        av_frame_free(&frame);
+    }
+};
+
+typedef std::unique_ptr<AVFrame, AVFrameDeleter> AVFramePtr;
 
 #include "FakeFile.h"
 

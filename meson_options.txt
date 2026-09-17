@@ -1,0 +1,2 @@
+option('vapoursynth_includedir', type: 'string', value: '',
+       description: 'Directory containing VapourSynth4.h, used instead of pkg-config')

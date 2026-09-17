@@ -205,9 +205,8 @@ void printInfo(const AVFormatContext *fctx, const FakeFile &fake_file) {
             if (desc)
                 type = desc->long_name ? desc->long_name : desc->name;
 
-            int width, height;
-            if (av_opt_get_image_size(fctx->streams[i]->codecpar, "video_size", 0, &width, &height) < 0)
-                width = height = -1;
+            int width = fctx->streams[i]->codecpar->width;
+            int height = fctx->streams[i]->codecpar->height;
 
             const char *pixel_format = av_get_pix_fmt_name(static_cast<AVPixelFormat>(fctx->streams[i]->codecpar->format));
             if (!pixel_format)
@@ -231,18 +230,15 @@ void printInfo(const AVFormatContext *fctx, const FakeFile &fake_file) {
             if (desc)
                 type = desc->long_name ? desc->long_name : desc->name;
 
-            int64_t bit_rate, channel_layout, sample_rate;
+            int64_t bit_rate = fctx->streams[i]->codecpar->bit_rate;
+            int64_t sample_rate = fctx->streams[i]->codecpar->sample_rate;
 
-            if (av_opt_get_int(fctx->streams[i]->codecpar, "ab", 0, &bit_rate) < 0)
-                bit_rate = -1;
-
-            channel_layout = getChannelLayout(fctx->streams[i]->codecpar);
-
-            if (av_opt_get_int(fctx->streams[i]->codecpar, "ar", 0, &sample_rate) < 0)
-                sample_rate = -1;
+            AVChannelLayout channel_layout = { };
+            getChannelLayout(fctx->streams[i]->codecpar, &channel_layout);
 
             char channels[512] = { 0 };
-            av_get_channel_layout_string(channels, 512, 0, channel_layout);
+            av_channel_layout_describe(&channel_layout, channels, sizeof(channels));
+            av_channel_layout_uninit(&channel_layout);
 
             fprintf(stderr, "    Id: %x, type: %s, %d kbps, %s, %d Hz\n",
                     fctx->streams[i]->id,
@@ -305,22 +301,20 @@ struct CommandLine {
         return error;
     }
 
-    // char** or std::vector<std::string>
-    template<typename Args>
-    bool parse(int argc, Args argv, FakeFile &fake_file) {
-        const char *opt_help = "--help";
-        const char *opt_version = "--version";
-        const char *opt_info = "--info";
-        const char *opt_quiet = "--quiet";
-        const char *opt_output = "--output";
-        const char *opt_audio_ids = "--audio-ids";
-        const char *opt_video_id = "--video-id";
-        const char *opt_input_range = "--input-range";
-        const char *opt_ffmpeg_log_level = "--ffmpeg-log-level";
-        const char *opt_relative_paths = "--relative-paths";
-        const char *opt_single_input = "--single-input";
+    static constexpr const char *opt_help = "--help";
+    static constexpr const char *opt_version = "--version";
+    static constexpr const char *opt_info = "--info";
+    static constexpr const char *opt_quiet = "--quiet";
+    static constexpr const char *opt_output = "--output";
+    static constexpr const char *opt_audio_ids = "--audio-ids";
+    static constexpr const char *opt_video_id = "--video-id";
+    static constexpr const char *opt_input_range = "--input-range";
+    static constexpr const char *opt_ffmpeg_log_level = "--ffmpeg-log-level";
+    static constexpr const char *opt_relative_paths = "--relative-paths";
+    static constexpr const char *opt_single_input = "--single-input";
 
-        std::unordered_set<std::string> valid_options = {
+    static bool isOption(const std::string &arg) {
+        static const std::unordered_set<std::string> valid_options = {
             opt_help,
             opt_version,
             opt_info,
@@ -334,12 +328,29 @@ struct CommandLine {
             opt_single_input,
         };
 
+        return valid_options.count(arg);
+    }
+
+    // char** or std::vector<std::string>
+    // Returns the first argument that looks like an option D2V Witch doesn't know, or "".
+    template<typename Args>
+    static std::string findUnknownOption(int argc, Args argv) {
         for (int i = 1; i < argc; i++) {
             std::string arg(argv[i]);
-            if (arg.size() > 1 && arg[0] == '-' && !valid_options.count(arg)) {
-                error = "Unknown option '" + arg + "'. If this is the name of a file, please pass it as './" + arg + "'.";
-                return false;
-            }
+            if (arg.size() > 1 && arg[0] == '-' && !isOption(arg))
+                return arg;
+        }
+
+        return std::string();
+    }
+
+    // char** or std::vector<std::string>
+    template<typename Args>
+    bool parse(int argc, Args argv, FakeFile &fake_file) {
+        std::string unknown_option = findUnknownOption(argc, argv);
+        if (unknown_option.size()) {
+            error = "Unknown option '" + unknown_option + "'. If this is the name of a file, please pass it as './" + unknown_option + "'.";
+            return false;
         }
 
         for (int i = 1; i < argc; i++) {
@@ -356,7 +367,7 @@ struct CommandLine {
             } else if (arg == opt_quiet) {
                 stay_quiet = true;
             } else if (arg == opt_output) {
-                if (i == argc - 1 || valid_options.count(argv[i + 1])) {
+                if (i == argc - 1 || isOption(argv[i + 1])) {
                     error = opt_output;
                     error += " requires a file name.";
                     return false;
@@ -365,7 +376,7 @@ struct CommandLine {
                 d2v_path = argv[i + 1];
                 i++;
             } else if (arg == opt_audio_ids) {
-                if (i == argc - 1 || valid_options.count(argv[i + 1])) {
+                if (i == argc - 1 || isOption(argv[i + 1])) {
                     error = opt_audio_ids;
                     error += " requires a list of audio track ids, or the special value 'all'.";
                     return false;
@@ -404,7 +415,7 @@ struct CommandLine {
                     } while (id_end != std::string::npos);
                 }
             } else if (arg == opt_video_id) {
-                if (i == argc - 1 || valid_options.count(argv[i + 1])) {
+                if (i == argc - 1 || isOption(argv[i + 1])) {
                     error = opt_video_id;
                     error += " requires a video id.";
                     return false;
@@ -428,7 +439,7 @@ struct CommandLine {
 
                 have_video_id = true;
             } else if (arg == opt_input_range) {
-                if (i == argc - 1 || valid_options.count(argv[i + 1])) {
+                if (i == argc - 1 || isOption(argv[i + 1])) {
                     error = opt_input_range;
                     error += " requires either 'limited' or 'full'";
                     return false;
@@ -447,7 +458,7 @@ struct CommandLine {
                     return false;
                 }
             } else if (arg == opt_ffmpeg_log_level) {
-                if (i == argc - 1 || valid_options.count(argv[i + 1])) {
+                if (i == argc - 1 || isOption(argv[i + 1])) {
                     error = opt_ffmpeg_log_level;
                     error += " requires one of 'quiet', 'panic', 'fatal', 'error', 'warning', 'info', 'verbose', 'debug', or 'trace'.";
                     return false;
@@ -473,7 +484,7 @@ struct CommandLine {
                     return false;
                 }
             } else if (arg == opt_relative_paths) {
-                if (i == argc - 1 || valid_options.count(argv[i + 1])) {
+                if (i == argc - 1 || isOption(argv[i + 1])) {
                     error = opt_relative_paths;
                     error += " requires one of 'yes' or 'no'.";
                     return false;
@@ -542,8 +553,14 @@ int main(int argc, char **_argv) {
 #endif
 
 
+    // A QApplication is only needed for the GUI: without parameters, or with options D2V Witch
+    // doesn't know, which may be Qt's (QApplication removes those). Without one the command line
+    // mode works without a display or a Qt platform plugin, and doesn't show up in the Dock.
+    bool maybe_gui = argc == 1 || CommandLine::findUnknownOption(argc, _argv).size();
 #ifdef PROBABLY_USES_X_OR_WAYLAND
-    if (getenv("DISPLAY") || getenv("WAYLAND_DISPLAY")) {
+    if (maybe_gui && (getenv("DISPLAY") || getenv("WAYLAND_DISPLAY"))) {
+#elif !defined(Q_OS_WIN)
+    if (maybe_gui) {
 #endif
         QApplication app(argc, _argv);
         QStringList arguments = QApplication::arguments();
@@ -570,7 +587,7 @@ int main(int argc, char **_argv) {
 
             return app.exec();
         }
-#ifdef PROBABLY_USES_X_OR_WAYLAND
+#if !defined(Q_OS_WIN)
     }
 #endif
 
@@ -641,11 +658,7 @@ int main(int argc, char **_argv) {
 
             if (index > -1) {
                 for (int i = index + 1; i < entries.size(); i++) {
-#ifdef USE_QT6
-                    if (entries[i].mid(4, 2) == name.mid(4, 2))
-#else
-                    if (entries[i].midRef(4, 2) == name.midRef(4, 2))
-#endif
+                    if (QStringView(entries[i]).mid(4, 2) == QStringView(name).mid(4, 2))
                         fake_file.push_back(input_dir.absoluteFilePath(entries[i]).toStdString());
                 }
             }

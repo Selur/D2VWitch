@@ -44,7 +44,7 @@ void closeAudioFiles(AudioFilesMap &audio_files, const AVFormatContext *fctx);
 
 const char *suggestAudioFileExtension(AVCodecID codec_id);
 
-int64_t getChannelLayout(AVCodecParameters *avctx);
+void getChannelLayout(const AVCodecParameters *avpar, AVChannelLayout *channel_layout);
 
 bool calculateAudioDelays(FakeFile &fake_file, int video_stream_id, AudioDelayMap &audio_delay_map, int64_t *first_video_keyframe_pos, std::string &error);
 

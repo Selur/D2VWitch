@@ -190,10 +190,7 @@ void FFMPEG::deinitVideoCodec() {
     }
 
 
-    if (avctx) {
-        avcodec_close(avctx);
-        avcodec_free_context(&avctx);
-    }
+    avcodec_free_context(&avctx);
 }
 
 
@@ -202,13 +199,17 @@ void FFMPEG::cleanup() {
 
 
     if (fctx) {
-        avio_context_free(&fctx->pb);
+        AVIOContext *pb = fctx->pb;
         avformat_close_input(&fctx);
+
+        // lavf may have replaced io_buffer, and doesn't free the buffer of a custom AVIOContext.
+        if (pb)
+            av_freep(&pb->buffer);
+        avio_context_free(&pb);
     }
 
 
     for (auto it = audio_ctx.begin(); it != audio_ctx.end(); it++) {
-        avcodec_close(it->second);
         avcodec_free_context(&it->second);
     }
 }

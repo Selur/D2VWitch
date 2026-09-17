@@ -22,7 +22,7 @@ Supported video codecs:
 
 The executable is both a console application and a graphical one. The
 graphical interface is shown if the command line parameters passed
-are all `recognised by Qt <http://doc.qt.io/qt-5/qapplication.html#QApplication>`_,
+are all `recognised by Qt <https://doc.qt.io/qt-6/qapplication.html#QApplication>`_,
 or if there are no command line parameters.
 
 Due to technical reasons, D2V Witch will not look quite right in
@@ -115,26 +115,26 @@ parts of the video can still be done even if they are not found.
 Compilation
 ===========
 
-The usual steps work::
+D2V Witch is built with Meson::
 
-    ./autogen.sh
-    ./configure
-    make
+    meson setup build
+    ninja -C build
 
-Alternatively::
+If VapourSynth's pkg-config file is not available, point Meson at the
+directory containing VapourSynth4.h::
 
-    meson build
-    cd build
-    ninja
+    meson setup build -Dvapoursynth_includedir=/path/to/vapoursynth/include
 
 Requirements:
-    - A C++11 compiler
+    - A C++17 compiler
 
-    - FFmpeg 3.4 or newer (Libav maybe works too)
+    - Meson 0.57 or newer
 
-    - Qt 5.2, or maybe newer (5.5.1 works)
+    - FFmpeg 7.0 or newer
 
-    - VapourSynth.h
+    - Qt 6
+
+    - VapourSynth4.h (VapourSynth R55 or newer)
 
 
 Limitations

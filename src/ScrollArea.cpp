@@ -26,7 +26,7 @@ SOFTWARE.
 
 void ScrollArea::mousePressEvent(QMouseEvent *e) {
     if (e->buttons() == Qt::LeftButton) {
-        old_mouse_position = e->globalPos();
+        old_mouse_position = e->globalPosition().toPoint();
     } else {
         QScrollArea::mousePressEvent(e);
     }
@@ -35,7 +35,7 @@ void ScrollArea::mousePressEvent(QMouseEvent *e) {
 
 void ScrollArea::mouseMoveEvent(QMouseEvent *e) {
     if (e->buttons() == Qt::LeftButton) {
-        QPoint new_mouse_position = e->globalPos();
+        QPoint new_mouse_position = e->globalPosition().toPoint();
         QPoint diff = new_mouse_position - old_mouse_position;
         old_mouse_position = new_mouse_position;
 
