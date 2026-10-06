@@ -37,9 +37,9 @@ jobs:
             ca-certificates git g++ meson ninja-build pkg-config xz-utils \
             qt6-base-dev qt6-base-dev-tools libavcodec-dev libavformat-dev libavutil-dev
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           repository: vapoursynth/vapoursynth
           ref: ${{ env.VAPOURSYNTH_REF }}
@@ -90,7 +90,10 @@ jobs:
 
       - name: Configure
         run: |
-          args=(--buildtype=release -Dvapoursynth_includedir="$GITHUB_WORKSPACE/vapoursynth/include")
+          # Meson refuses include directories inside the source tree.
+          vsinc="$RUNNER_TEMP/vapoursynth-include"
+          cp -r vapoursynth/include "$vsinc"
+          args=(--buildtype=release -Dvapoursynth_includedir="$vsinc")
           if [[ "$RUNNER_OS" == Windows ]]; then
             # Use MSVC like the Qt and FFmpeg builds, not the MinGW g++ found on the runner.
             args+=(--vsenv)
