@@ -1,5 +1,5 @@
-v6.1 (unreleased)
-=================
+v6.1 (20261006)
+===============
 
 * Fix the d2v files of MPEG-1 system streams in which a keyframe starts
   in the middle of a PES packet. ffmpeg gives no position for such a
