@@ -1,5 +1,5 @@
-v7 (unreleased)
-===============
+v6.1 (unreleased)
+=================
 
 * Fix the d2v files of MPEG-1 system streams in which a keyframe starts
   in the middle of a PES packet. ffmpeg gives no position for such a
@@ -8,6 +8,10 @@ v7 (unreleased)
   d2vsource!"). The check of the keyframe locations now treats these
   lines as unreachable and merges them into the previous line, like
   other unreachable keyframes. Decoding a whole file is not affected.
+
+* Automatic builds for Windows x64, Linux x86_64 and macOS arm64 with
+  GitHub Actions. Pushing a tag ``v*`` creates a GitHub release with
+  these builds.
 
 
 

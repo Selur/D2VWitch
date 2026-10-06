@@ -1,0 +1,187 @@
+name: Build
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+env:
+  # Only VapourSynth4.h is needed, the library is loaded at runtime.
+  VAPOURSYNTH_REF: R72
+  QT_VERSION: '6.8.*'
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: Windows x64, os: windows-latest, platform: windows-x64 }
+          # Debian trixie ships FFmpeg 7.1 and Qt 6.8; the runner's Ubuntu has a too old FFmpeg.
+          - { name: Linux x86_64, os: ubuntu-latest, platform: linux-x86_64, container: 'debian:trixie' }
+          - { name: macOS arm64, os: macos-14, platform: macos-arm64 }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates git g++ meson ninja-build pkg-config xz-utils \
+            qt6-base-dev qt6-base-dev-tools libavcodec-dev libavformat-dev libavutil-dev
+
+      - uses: actions/checkout@v5
+
+      - uses: actions/checkout@v5
+        with:
+          repository: vapoursynth/vapoursynth
+          ref: ${{ env.VAPOURSYNTH_REF }}
+          path: vapoursynth
+          sparse-checkout: include
+
+      - name: Package name
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version="$GITHUB_REF_NAME"
+          else
+            version="v$(sed -n "s/^ *version: '\(.*\)',$/\1/p" meson.build | head -n1)-git-${GITHUB_SHA::7}"
+          fi
+          echo "PACKAGE=d2vwitch-$version-${{ matrix.platform }}" >> "$GITHUB_ENV"
+
+      - name: Install Qt
+        if: runner.os != 'Linux'
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          arch: ${{ runner.os == 'Windows' && 'win64_msvc2022_64' || '' }}
+          cache: true
+
+      - name: Install Windows dependencies
+        if: runner.os == 'Windows'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python -m pip install meson ninja pkgconf
+          # Shared LGPL build with MSVC import libraries.
+          gh release download latest -R BtbN/FFmpeg-Builds -D ffmpeg-dl \
+            -p 'ffmpeg-n8.*-latest-win64-lgpl-shared-*.zip'
+          zip=$(ls ffmpeg-dl/*.zip | sort -V | tail -n1)
+          echo "Using $zip"
+          7z x -offmpeg-win "$zip" > /dev/null
+          dir=$(cd ffmpeg-win/*/ && pwd -W)
+          # Make the pkg-config files point at the unpacked directory.
+          sed -i -E -e "s|^prefix=.*|prefix=$dir|" -e "s|/ffbuild/prefix|$dir|g" "$dir"/lib/pkgconfig/*.pc
+          {
+            echo "FFMPEG_DIR=$dir"
+            echo "PKG_CONFIG=pkgconf"
+            echo "PKG_CONFIG_PATH=$dir/lib/pkgconfig"
+          } >> "$GITHUB_ENV"
+
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        run: brew install meson ninja pkgconf ffmpeg
+
+      - name: Configure
+        run: |
+          # Meson refuses include directories inside the source tree.
+          vsinc="$RUNNER_TEMP/vapoursynth-include"
+          cp -r vapoursynth/include "$vsinc"
+          args=(--buildtype=release -Dvapoursynth_includedir="$vsinc")
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            # Use MSVC like the Qt and FFmpeg builds, not the MinGW g++ found on the runner.
+            args+=(--vsenv)
+            export CXX=cl
+          fi
+          meson setup build "${args[@]}"
+
+      - name: Build
+        run: meson compile -C build -v
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          build/d2vwitch --version
+          mkdir -p "dist/$PACKAGE"
+          cp build/d2vwitch readme.rst changes.rst "dist/$PACKAGE/"
+          tar -C dist -cJf "$PACKAGE.tar.xz" "$PACKAGE"
+
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          out="dist/$PACKAGE"
+          app="$out/d2vwitch.app"
+          mkdir -p "$app/Contents/MacOS"
+          cp build/d2vwitch "$app/Contents/MacOS/"
+          version=$(sed -n "s/^ *version: '\(.*\)',$/\1/p" meson.build | head -n1)
+          cat > "$app/Contents/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleExecutable</key><string>d2vwitch</string>
+            <key>CFBundleIdentifier</key><string>com.github.selur.d2vwitch</string>
+            <key>CFBundleName</key><string>D2V Witch</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>$version</string>
+            <key>CFBundleVersion</key><string>$version</string>
+            <key>NSHighResolutionCapable</key><true/>
+          </dict>
+          </plist>
+          EOF
+          # Copies the Qt frameworks and the Homebrew FFmpeg libraries into the bundle.
+          macdeployqt "$app" -always-overwrite
+          codesign --force --deep --sign - "$app"
+          "$app/Contents/MacOS/d2vwitch" --version
+          cp readme.rst changes.rst "$out/"
+          ditto -c -k --keepParent "$out" "$PACKAGE.zip"
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          out="dist/$PACKAGE"
+          mkdir -p "$out"
+          cp build/d2vwitch.exe readme.rst changes.rst "$out/"
+          cp "$FFMPEG_DIR"/bin/*.dll "$out/"
+          windeployqt --release --no-translations --no-system-d3d-compiler --no-opengl-sw \
+            --no-compiler-runtime "$out/d2vwitch.exe"
+          # Ship the MSVC runtime next to the executable.
+          for dll in msvcp140.dll msvcp140_1.dll vcruntime140.dll vcruntime140_1.dll; do
+            cp "/c/Windows/System32/$dll" "$out/"
+          done
+          # Fails if a DLL is missing.
+          QT_QPA_PLATFORM=offscreen timeout 60 "$out/d2vwitch.exe" --version
+          (cd dist && 7z a -tzip "../$PACKAGE.zip" "$PACKAGE" > /dev/null)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PACKAGE }}
+          path: |
+            ${{ env.PACKAGE }}.zip
+            ${{ env.PACKAGE }}.tar.xz
+          if-no-files-found: error
+
+  release:
+    name: GitHub release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.zip
+            dist/*.tar.xz
+          generate_release_notes: true
