@@ -125,6 +125,10 @@ directory containing VapourSynth4.h::
 
     meson setup build -Dvapoursynth_includedir=/path/to/vapoursynth/include
 
+Builds for Windows x64, Linux x86_64 (Debian trixie) and macOS arm64 are
+made by GitHub Actions for every push (see the "Build" workflow). Pushing
+a tag like ``v6.1`` publishes them as a GitHub release.
+
 Requirements:
     - A C++17 compiler
 

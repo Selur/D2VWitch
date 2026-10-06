@@ -1,12 +1,13 @@
 project('d2vwitch', 'cpp',
-        version: '6',
+        version: '6.1',
         default_options: ['buildtype=release', 'cpp_std=c++17'],
         meson_version: '>=0.57')
 
 cxx = meson.get_compiler('cpp')
 
 qt = import('qt6')
-dep_qt = dependency('qt6', modules: ['Core', 'Gui', 'Widgets'], required: true)
+# main: links Qt6EntryPoint on Windows, which provides WinMain for the GUI subsystem.
+dep_qt = dependency('qt6', modules: ['Core', 'Gui', 'Widgets'], main: true, required: true)
 
 # Only the headers are needed, the library is loaded at runtime.
 vs_includedir = get_option('vapoursynth_includedir')
@@ -58,11 +59,14 @@ sources = [
   processed_files
 ]
 
-warnings = [
-  '-Wall',
-  '-Wextra',
-  '-Wshadow'
-]
+warnings = []
+if cxx.get_argument_syntax() == 'gcc'
+  warnings += [
+    '-Wall',
+    '-Wextra',
+    '-Wshadow'
+  ]
+endif
 
 cpp_args = [
   '-DPACKAGE_VERSION="@0@"'.format(meson.project_version()),
