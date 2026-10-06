@@ -1,3 +1,16 @@
+v7 (unreleased)
+===============
+
+* Fix the d2v files of MPEG-1 system streams in which a keyframe starts
+  in the middle of a PES packet. ffmpeg gives no position for such a
+  keyframe, so the d2v got a line with the position -1 and d2vsource
+  could not seek to the frames behind it ("Seek pattern broke
+  d2vsource!"). The check of the keyframe locations now treats these
+  lines as unreachable and merges them into the previous line, like
+  other unreachable keyframes. Decoding a whole file is not affected.
+
+
+
 v6 (20260917)
 =============
 

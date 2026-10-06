@@ -678,7 +678,11 @@ void D2V::index() {
 
         av_packet_unref(&packet);
 
-        bool invalid_seek_point = position != 0;
+        // A negative target means ffmpeg did not know where the keyframe starts (MPEG-1 system streams: the keyframe begins in the middle of a PES packet).
+        // Seeking to it lands at the start of the file, where the first video packet is at position 0, so the position test alone would accept it.
+        // Declaring it invalid merges its pictures into the previous line below, d2vsource can then seek to every line (it starts decoding in the
+        // previous line, MPEG-1 GOPs are never flagged closed).
+        bool invalid_seek_point = position != 0 || target < 0;
 
         if (invalid_seek_point) {
             int64_t previous_target = i ? lines[i - 1].position : -1;
