@@ -1,3 +1,19 @@
+v6.1.1 (20261008)
+=================
+
+* Windows: fix a crash (exit code 0xC0000409) when the command line
+  version is started by a program without a console, such as a GUI
+  program. Only streams without a handle are reopened on the parent's
+  console now, so output redirected to a pipe or a file stays there and
+  the caller receives the progress messages.
+
+* Windows: the command line version no longer creates a QApplication,
+  like on Linux and macOS. It works without a Qt platform plugin and
+  can't show the "no Qt platform plugin" error dialog. The arguments are
+  read as Unicode from the Windows command line.
+
+
+
 v6.1 (20261006)
 ===============
 

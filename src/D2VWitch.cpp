@@ -36,6 +36,7 @@ extern "C" {
 #include <fcntl.h>
 #include <io.h>
 #include <windows.h>
+#include <shellapi.h>
 #endif
 
 #include <QApplication>
@@ -529,6 +530,33 @@ struct CommandLine {
 
 
 #ifdef _WIN32
+static QString iniPathNextToExecutable() {
+    std::vector<wchar_t> buffer(MAX_PATH);
+    DWORD length;
+    while ((length = GetModuleFileNameW(nullptr, buffer.data(), (DWORD)buffer.size())) == buffer.size())
+        buffer.resize(buffer.size() * 2);
+
+    QString path = QString::fromWCharArray(buffer.data(), (int)length);
+    int last_dot = path.lastIndexOf('.');
+    return path.left(last_dot) + ".ini";
+}
+
+
+// The command line as Unicode, like QApplication::arguments() (argv is in the ANSI code page).
+static QStringList wideCommandLineArguments() {
+    QStringList arguments;
+    int count = 0;
+    wchar_t **wide = CommandLineToArgvW(GetCommandLineW(), &count);
+    if (!wide)
+        return arguments;
+
+    for (int i = 0; i < count; i++)
+        arguments.push_back(QString::fromWCharArray(wide[i]));
+    LocalFree(wide);
+    return arguments;
+}
+
+
 static BOOL WINAPI HandlerRoutine(DWORD dwCtrlType) {
     switch (dwCtrlType) {
     case CTRL_C_EVENT:
@@ -543,8 +571,11 @@ static BOOL WINAPI HandlerRoutine(DWORD dwCtrlType) {
 
 
 int main(int argc, char **_argv) {
-#if !defined(Q_OS_WIN)
-    // Can't put it with the other QSettings below because of the braces.
+#if defined(Q_OS_WIN)
+    // d2vwitch.ini next to the executable; the path comes from Windows, a QApplication may not exist.
+    QSettings settings(iniPathNextToExecutable(), QSettings::IniFormat);
+    QStringList arguments;
+#else
     QSettings settings("d2vwitch", "d2vwitch");
 #endif
 
@@ -559,22 +590,15 @@ int main(int argc, char **_argv) {
     bool maybe_gui = argc == 1 || CommandLine::findUnknownOption(argc, _argv).size();
 #ifdef PROBABLY_USES_X_OR_WAYLAND
     if (maybe_gui && (getenv("DISPLAY") || getenv("WAYLAND_DISPLAY"))) {
-#elif !defined(Q_OS_WIN)
+#else
     if (maybe_gui) {
 #endif
         QApplication app(argc, _argv);
-        QStringList arguments = QApplication::arguments();
-
 #if defined(Q_OS_WIN)
-        // Must put it here because QApplication::applicationDirPath returns ""
-        // if it's called before a QApplication is created.
-        QString ini_name = QApplication::applicationFilePath();
-        int last_dot = ini_name.lastIndexOf('.');
-        ini_name = ini_name.left(last_dot) + ".ini";
-        QSettings settings(ini_name, QSettings::IniFormat);
+        arguments = QApplication::arguments();
 #endif
 
-        if (arguments.size() == 1) {
+        if (QApplication::arguments().size() == 1) {
             // ffmpeg init part 0
             av_log_set_level(AV_LOG_PANIC);
 
@@ -587,19 +611,25 @@ int main(int argc, char **_argv) {
 
             return app.exec();
         }
-#if !defined(Q_OS_WIN)
     }
-#endif
 
 #ifdef _WIN32
-    AttachConsole(ATTACH_PARENT_PROCESS);
+    if (arguments.isEmpty())
+        arguments = wideCommandLineArguments();
 
-    freopen("CON", "w", stdout);
-    freopen("CON", "w", stderr);
-    freopen("CON", "r", stdin);
+    // Only streams without a handle go to the parent's console: a pipe or file the caller
+    // redirected to stays, and without a console (started from a GUI program) nothing is reopened.
+    if (AttachConsole(ATTACH_PARENT_PROCESS)) {
+        if (_fileno(stdout) < 0)
+            freopen("CON", "w", stdout);
+        if (_fileno(stderr) < 0)
+            freopen("CON", "w", stderr);
+        if (_fileno(stdin) < 0)
+            freopen("CON", "r", stdin);
+    }
 
 
-    if (_setmode(_fileno(stdout), _O_BINARY) == -1)
+    if (_fileno(stdout) >= 0 && _setmode(_fileno(stdout), _O_BINARY) == -1)
         fprintf(stderr, "Failed to set stdout to binary mode.\n");
 
     SetConsoleCtrlHandler(HandlerRoutine, TRUE);
