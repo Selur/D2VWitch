@@ -1,3 +1,12 @@
+v6.1.2 (20261024)
+=================
+
+* Builds against FFmpeg 9 (no source changes; FFmpeg 7 and newer still
+  work). The release builds use FFmpeg 9.0 on all platforms. The d2v
+  files and the demuxed audio are identical to builds against FFmpeg 8.
+
+
+
 v6.1.1 (20261008)
 =================
 

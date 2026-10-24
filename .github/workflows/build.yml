@@ -22,8 +22,8 @@ jobs:
       matrix:
         include:
           - { name: Windows x64, os: windows-latest, platform: windows-x64 }
-          # Debian trixie ships FFmpeg 7.1 and Qt 6.8; the runner's Ubuntu has a too old FFmpeg.
-          - { name: Linux x86_64, os: ubuntu-latest, platform: linux-x86_64, container: 'debian:trixie' }
+          # Debian forky ships FFmpeg 9.0 and Qt 6; the runner's Ubuntu has a too old FFmpeg.
+          - { name: Linux x86_64, os: ubuntu-latest, platform: linux-x86_64, container: 'debian:forky' }
           - { name: macOS arm64, os: macos-14, platform: macos-arm64 }
     defaults:
       run:
@@ -71,7 +71,7 @@ jobs:
           python -m pip install meson ninja pkgconf
           # Shared LGPL build with MSVC import libraries.
           gh release download latest -R BtbN/FFmpeg-Builds -D ffmpeg-dl \
-            -p 'ffmpeg-n8.*-latest-win64-lgpl-shared-*.zip'
+            -p 'ffmpeg-n9.*-latest-win64-lgpl-shared-*.zip'
           zip=$(ls ffmpeg-dl/*.zip | sort -V | tail -n1)
           echo "Using $zip"
           7z x -offmpeg-win "$zip" > /dev/null
@@ -86,6 +86,7 @@ jobs:
 
       - name: Install macOS dependencies
         if: runner.os == 'macOS'
+        # Homebrew's ffmpeg is FFmpeg 9.0.
         run: brew install meson ninja pkgconf ffmpeg
 
       - name: Configure
