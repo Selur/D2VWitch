@@ -10,7 +10,6 @@ on:
 env:
   # Only VapourSynth4.h is needed, the library is loaded at runtime.
   VAPOURSYNTH_REF: R72
-  QT_VERSION: '6.8.*'
 
 jobs:
   build:
@@ -21,10 +20,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: Windows x64, os: windows-latest, platform: windows-x64 }
+          - { name: Windows x64, os: windows-latest, platform: windows-x64, qt: '6.8.*' }
           # Debian forky ships FFmpeg 9.0 and Qt 6; the runner's Ubuntu has a too old FFmpeg.
           - { name: Linux x86_64, os: ubuntu-latest, platform: linux-x86_64, container: 'debian:forky' }
-          - { name: macOS arm64, os: macos-latest, platform: macos-arm64 }
+          # Qt 6.8's qyieldcpu.h does not compile with the runner's Xcode.
+          - { name: macOS arm64, os: macos-latest, platform: macos-arm64, qt: '6.11.1' }
     defaults:
       run:
         shell: bash
@@ -59,7 +59,7 @@ jobs:
         if: runner.os != 'Linux'
         uses: jurplel/install-qt-action@v4
         with:
-          version: ${{ env.QT_VERSION }}
+          version: ${{ matrix.qt }}
           arch: ${{ runner.os == 'Windows' && 'win64_msvc2022_64' || '' }}
           cache: true
 
