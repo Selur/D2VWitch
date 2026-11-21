@@ -1,3 +1,10 @@
+v6.1.3 (20261121)
+=================
+
+* CI: the macOS build runs on macos-latest with Qt 6.11.1 (no source changes).
+
+
+
 v6.1.2 (20261024)
 =================
 
